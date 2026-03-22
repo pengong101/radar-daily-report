@@ -1,0 +1,2 @@
+# 使用 localhost:8081（从 OpenClaw 容器内部访问）
+SEARXNG_URL = "http://localhost:8081"
