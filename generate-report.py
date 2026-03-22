@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
 """
-Millimeter Wave Radar Daily Report Generator v2.1
+Millimeter Wave Radar Daily Report Generator v2.2
 Automatically collect global data and generate technical daily reports
 Author: pengong101
 License: MIT
+
+Changelog v2.2:
+- Added multi-strategy date parsing (API/URL/content)
+- Added date-based filtering (MIN_YEAR, MAX_AGE_DAYS)
+- Results sorted by recency
+- Better date extraction from Chinese content
 
 Changelog v2.1:
 - Removed Brave engine (no API subscription)
@@ -17,7 +23,8 @@ import requests
 import json
 from datetime import datetime, timedelta
 import os
-from typing import Dict, List, Optional
+import re
+from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, asdict
 import hashlib
 import time
@@ -34,6 +41,10 @@ CACHE_EXPIRY = int(os.environ.get("CACHE_EXPIRY", "3600"))  # 1 hour default
 # 搜索优化配置
 SEARCH_TIME_RANGE = "week"  # 只搜索最近 7 天的内容 (SearXNG 格式：day/week/month/year)
 EXCLUDE_SITES = ["百度知道"]  # 排除低质量内容
+# 日期过滤配置
+MIN_YEAR = 2025  # 只保留 2025 年及以后的内容
+PREFER_DAYS = 30  # 优先保留最近 30 天的内容
+MAX_AGE_DAYS = 365  # 最大允许年龄（超过则过滤）
 
 @dataclass
 class SearchResult:
@@ -197,14 +208,21 @@ class RadarReportGenerator:
             results = []
             
             for keyword in keywords[:3]:  # Top 3 keywords per category
-                search_results = self.search(keyword, engines=SEARCH_ENGINES, max_results=5, time_range=SEARCH_TIME_RANGE)
+                search_results = self.search(keyword, engines=SEARCH_ENGINES, max_results=8, time_range=SEARCH_TIME_RANGE)
                 results.extend(search_results)
                 time.sleep(0.5)  # Rate limiting
             
             # Remove duplicates
             unique_results = self._deduplicate(results)
-            sections[category] = unique_results[:10]  # Top 10 per category
+            
+            # Filter by date (new: remove old content)
+            date_filtered = self._filter_by_date(unique_results)
+            
+            # Take top 10 (already sorted by date)
+            sections[category] = date_filtered[:10]
             total_items += len(sections[category])
+            
+            print(f"    Found {len(results)} → {len(unique_results)} unique → {len(date_filtered)} after date filter")
         
         # Generate summary
         summary = self._generate_summary(sections, date)
@@ -266,6 +284,105 @@ class RadarReportGenerator:
                 seen_urls.add(result.url)
                 unique.append(result)
         return unique
+    
+    def _parse_date(self, result: SearchResult) -> Optional[datetime]:
+        """
+        Parse date from search result (multiple strategies)
+        
+        Args:
+            result: SearchResult object
+            
+        Returns:
+            datetime object or None
+        """
+        # Strategy 1: Use publishedDate from API
+        if result.published_date:
+            try:
+                # Handle various date formats
+                date_str = result.published_date[:10]  # Extract YYYY-MM-DD
+                return datetime.strptime(date_str, '%Y-%m-%d')
+            except:
+                pass
+        
+        # Strategy 2: Extract year from URL
+        year_match = re.search(r'(20\d{2})', result.url)
+        if year_match:
+            year = int(year_match.group(1))
+            if year >= MIN_YEAR:
+                # Try to extract month/day from URL
+                date_match = re.search(r'(\d{4})[-/](\d{2})[-/](\d{2})', result.url)
+                if date_match:
+                    try:
+                        return datetime.strptime(f"{date_match.group(1)}-{date_match.group(2)}-{date_match.group(3)}", '%Y-%m-%d')
+                    except:
+                        pass
+                # Fallback to Jan 1 of that year
+                return datetime(year, 1, 1)
+        
+        # Strategy 3: Extract date from content
+        content = result.content + result.title
+        date_patterns = [
+            r'(20\d{2}) 年 (\d{1,2}) 月 (\d{1,2}) 日',  # Chinese format
+            r'(\d{4})-(\d{2})-(\d{2})',  # ISO format
+            r'(\d{1,2})/(\d{1,2})/(20\d{2})',  # US format
+        ]
+        for pattern in date_patterns:
+            match = re.search(pattern, content)
+            if match:
+                try:
+                    groups = match.groups()
+                    if '年' in pattern:  # Chinese format
+                        return datetime(int(groups[0]), int(groups[1]), int(groups[2]))
+                    elif '/' in pattern:  # US format
+                        return datetime(int(groups[2]), int(groups[0]), int(groups[1]))
+                    else:  # ISO format
+                        return datetime(int(groups[0]), int(groups[1]), int(groups[2]))
+                except:
+                    pass
+        
+        return None
+    
+    def _filter_by_date(self, results: List[SearchResult]) -> List[SearchResult]:
+        """
+        Filter results by date
+        
+        Args:
+            results: List of SearchResult objects
+            
+        Returns:
+            Filtered list (recent items first)
+        """
+        now = datetime.now()
+        filtered = []
+        
+        for result in results:
+            pub_date = self._parse_date(result)
+            
+            if pub_date is None:
+                # No date found - keep but mark as old
+                result._age_days = 9999
+                if MIN_YEAR <= 2025:  # If MIN_YEAR is set, still keep undated
+                    filtered.append(result)
+                continue
+            
+            age_days = (now - pub_date).days
+            result._age_days = age_days  # Store for sorting
+            result._parsed_date = pub_date
+            
+            # Filter out too old content
+            if age_days > MAX_AGE_DAYS:
+                continue
+            
+            # Filter out content before MIN_YEAR
+            if pub_date.year < MIN_YEAR:
+                continue
+            
+            filtered.append(result)
+        
+        # Sort by date (recent first)
+        filtered.sort(key=lambda x: getattr(x, '_age_days', 9999))
+        
+        return filtered
     
     def _generate_summary(self, sections: Dict[str, List[SearchResult]], date: str) -> str:
         """Generate report summary"""
