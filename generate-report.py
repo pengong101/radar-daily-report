@@ -1,9 +1,18 @@
 #!/usr/bin/env python3
 """
-Millimeter Wave Radar Daily Report Generator v2.2
+Millimeter Wave Radar Daily Report Generator v2.3
 Automatically collect global data and generate technical daily reports
 Author: pengong101
 License: MIT
+
+Changelog v2.3:
+- Optimized keywords for automotive radar focus
+- Added content quality scoring system
+- Filter out 5G/telecom irrelevant content
+- Added title blacklist filter
+- Positive keywords: 车载，汽车，automotive, 77GHz, ADAS, etc.
+- Negative keywords: 5G, 通信，telecom, 基站，WiFi, etc.
+- Title blacklist: printf, 机场，如何评价，etc.
 
 Changelog v2.2:
 - Added multi-strategy date parsing (API/URL/content)
@@ -46,6 +55,32 @@ MIN_YEAR = 2025  # 只保留 2025 年及以后的内容
 PREFER_DAYS = 30  # 优先保留最近 30 天的内容
 MAX_AGE_DAYS = 365  # 最大允许年龄（超过则过滤）
 
+# 内容质量评分配置
+POSITIVE_KEYWORDS = [
+    '车载', '汽车', 'automotive', 'vehicle', '77GHz', '24GHz',
+    '智能驾驶', '自动驾驶', 'ADAS', 'AEB', '盲区监测',
+    '传感器', 'sensor', '雷达模块', 'radar module',
+    '造车', '车企', 'Tesla', '华为', '小鹏', '理想', '蔚来',
+    '毫米波', 'mmWave', 'radar', '雷达', '探测', 'detection',
+    '4D 成像', '4D imaging', 'MIMO', '波束成形', 'beamforming'
+]
+NEGATIVE_KEYWORDS = [
+    '5G', '通信', 'telecom', '基站', 'base station',
+    '手机', 'mobile phone', 'WiFi', '无线传输',
+    '路由器', 'network', 'coverage', 'spectrum',
+    '机场', 'airport', '小红书', '评价', '如何评价'
+]
+QUALITY_THRESHOLD = -1  # 质量分低于此值则过滤
+
+# 标题过滤黑名单（直接排除）
+TITLE_BLACKLIST = [
+    'printf', 'c 语言', '编程', 'code', 'programming',
+    '机场等级', '4D 机场', '4C 机场', '4E 机场', '4F 机场',
+    '如何评价', '怎么样', '好不好', '小红书',
+    '%4d', '%d', 'format', '格式化',
+    '4DX 电影', '3D 电影', 'movie', 'film'
+]
+
 @dataclass
 class SearchResult:
     """Search result data structure"""
@@ -84,33 +119,33 @@ class RadarReportGenerator:
             'User-Agent': 'Mozilla/5.0 (compatible; RadarReportBot/2.0; +https://github.com/pengong101/radar-daily-report)'
         })
         
-        # Search keywords by category (使用精确匹配 + 排除低质内容)
+        # Search keywords by category (使用精确匹配 + 排除低质内容 + 聚焦车载/传感应用)
         self.keywords = {
             'industry': [
-                '"毫米波雷达" 2026 -百度知道',
-                '"mmWave radar" market 2026 -百度知道',
-                '"77GHz radar" automotive -百度知道',
-                '"4D imaging radar" mass production -百度知道',
-                '"radar sensor" technology -百度知道'
+                '"毫米波雷达" 车载 2026 -百度知道 -5G',
+                '"77GHz radar" automotive -百度知道 -5G',
+                '"4D imaging radar" 汽车 量产 -百度知道',
+                '"毫米波雷达" 智能驾驶 2026 -百度知道',
+                '"automotive radar" market 2026 -百度知道 -5G'
             ],
             'academic': [
-                '"mmWave radar" signal processing -百度知道',
-                '"MIMO radar" beamforming -百度知道',
-                '"radar target detection" algorithm -百度知道',
-                '"4D radar" point cloud -百度知道',
-                '"radar neural network" -百度知道'
+                '"毫米波雷达" 信号处理 -百度知道 -5G',
+                '"mmWave radar" signal processing automotive -百度知道',
+                '"MIMO radar" 车载 -百度知道',
+                '"4D radar" point cloud automotive -百度知道',
+                '"radar target detection" algorithm automotive -百度知道'
             ],
             'patents': [
-                '"毫米波雷达" 专利 -百度知道',
-                '"mmWave radar" patent -百度知道',
-                '"radar antenna" design patent -百度知道',
-                '"radar signal processing" patent -百度知道'
+                '"毫米波雷达" 专利 车载 -百度知道',
+                '"mmWave radar" patent automotive -百度知道',
+                '"radar antenna" 汽车 专利 -百度知道',
+                '"77GHz" 雷达 专利 -百度知道 -5G'
             ],
             'products': [
-                '"mmWave radar" module 2026 -百度知道',
-                '"77GHz radar" sensor new product -百度知道',
-                '"automotive radar" supplier -百度知道',
-                '"radar chip" manufacturer -百度知道'
+                '"毫米波雷达" 模块 车载 2026 -百度知道',
+                '"77GHz radar" sensor automotive -百度知道',
+                '"automotive radar" supplier 2026 -百度知道',
+                '"radar chip" 车规级 -百度知道 -5G'
             ]
         }
     
@@ -215,14 +250,17 @@ class RadarReportGenerator:
             # Remove duplicates
             unique_results = self._deduplicate(results)
             
-            # Filter by date (new: remove old content)
+            # Filter by date (remove old content)
             date_filtered = self._filter_by_date(unique_results)
             
-            # Take top 10 (already sorted by date)
-            sections[category] = date_filtered[:10]
+            # Filter by quality (remove irrelevant content like 5G telecom)
+            quality_filtered = self._filter_by_quality(date_filtered)
+            
+            # Take top 10 (sorted by quality, then by date)
+            sections[category] = quality_filtered[:10]
             total_items += len(sections[category])
             
-            print(f"    Found {len(results)} → {len(unique_results)} unique → {len(date_filtered)} after date filter")
+            print(f"    Found {len(results)} → {len(unique_results)} unique → {len(date_filtered)} date OK → {len(quality_filtered)} quality OK")
         
         # Generate summary
         summary = self._generate_summary(sections, date)
@@ -284,6 +322,62 @@ class RadarReportGenerator:
                 seen_urls.add(result.url)
                 unique.append(result)
         return unique
+    
+    def _calculate_quality_score(self, result: SearchResult) -> int:
+        """
+        Calculate content quality score based on keywords
+        
+        Args:
+            result: SearchResult object
+            
+        Returns:
+            Quality score (higher = more relevant to automotive radar)
+        """
+        text = f"{result.title} {result.content} {result.url}".lower()
+        score = 0
+        
+        # Count positive keywords
+        for keyword in POSITIVE_KEYWORDS:
+            if keyword.lower() in text:
+                score += 1
+        
+        # Count negative keywords
+        for keyword in NEGATIVE_KEYWORDS:
+            if keyword.lower() in text:
+                score -= 2  # Heavier penalty for negative keywords
+        
+        return score
+    
+    def _filter_by_quality(self, results: List[SearchResult]) -> List[SearchResult]:
+        """
+        Filter and sort results by quality score
+        
+        Args:
+            results: List of SearchResult objects
+            
+        Returns:
+            Filtered and sorted list
+        """
+        # Calculate scores
+        for result in results:
+            result._quality_score = self._calculate_quality_score(result)
+        
+        # Filter out low-quality results
+        filtered = [r for r in results if r._quality_score >= QUALITY_THRESHOLD]
+        
+        # Additional filter: remove obvious non-automotive content by title blacklist
+        further_filtered = []
+        for result in filtered:
+            title_lower = result.title.lower()
+            # Skip if title matches blacklist
+            if any(skip.lower() in title_lower for skip in TITLE_BLACKLIST):
+                continue
+            further_filtered.append(result)
+        
+        # Sort by quality score (descending), then by date (recent first)
+        further_filtered.sort(key=lambda x: (getattr(x, '_quality_score', 0), -getattr(x, '_age_days', 0)), reverse=True)
+        
+        return further_filtered
     
     def _parse_date(self, result: SearchResult) -> Optional[datetime]:
         """
