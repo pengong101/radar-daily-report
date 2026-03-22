@@ -80,7 +80,12 @@ POSITIVE_KEYWORDS = [
     '造车', '车企', 'Tesla', '华为', '小鹏', '理想', '蔚来',
     '毫米波', 'mmWave', 'radar', '雷达', '探测', 'detection',
     '4D 成像', '4D imaging', 'MIMO', '波束成形', 'beamforming',
-    '天线', 'antenna', '芯片', 'chip', 'PCB', '信号处理'
+    '天线', 'antenna', '芯片', 'chip', 'PCB', '信号处理',
+    # 新增英文关键词
+    'FMCW', 'phased array', 'beamforming', 'MIMO', 'point cloud',
+    'Tier1', 'supplier', 'Bosch', 'Continental', 'Valeo',
+    'autonomous driving', 'self-driving', 'L2', 'L3', 'L4',
+    'object detection', 'range detection', 'velocity', 'Doppler'
 ]
 NEGATIVE_KEYWORDS = [
     '5G', '通信', 'telecom', '基站', 'base station',
@@ -90,9 +95,10 @@ NEGATIVE_KEYWORDS = [
     'Qualcomm', 'GSMA', 'operator', 'small cell',
     'weather', 'climate', 'rain', 'snow', 'UK', 'Netweather',
     'consumer program', 'consumenten',
-    'avrotros', 'radar.avrotros', 'uitzendingen', 'tip de redactie'
+    'avrotros', 'radar.avrotros', 'uitzendingen', 'tip de redactie',
+    'avrotros.nl', 'consumentenprogramma'
 ]
-QUALITY_THRESHOLD = -2  # 质量分低于此值则过滤
+QUALITY_THRESHOLD = -3  # 质量分低于此值则过滤（从 -2 放宽到 -3，增加条目数量）
 
 # 学术分类专属负关键词（额外过滤 5G 通信内容）
 ACADEMIC_EXTRA_NEGATIVE = [
@@ -179,27 +185,42 @@ class RadarReportGenerator:
                 '"77GHz radar" automotive market -百度知道 -5G',
                 '"4D imaging radar" 汽车 量产 -百度知道',
                 '"毫米波雷达" 智能驾驶 2026 -百度知道',
-                '"automotive radar" market 2026 -百度知道 -5G'
+                '"automotive radar" market 2026 -百度知道 -5G',
+                # 新增英文长尾词
+                '"mmWave radar" automotive industry trends 2026 -5G -telecom',
+                '"car radar" sensor market analysis -5G -Qualcomm',
+                '"vehicle radar" ADAS L2 L3 L4 -5G'
             ],
             'academic': [
                 '"毫米波雷达" 信号处理 算法 车载 -百度知道 -5G -Qualcomm',
                 '"mmWave radar" automotive signal processing -5G -Qualcomm -GSMA',
                 '"MIMO radar" 车载 波束成形 天线 -百度知道',
                 '"4D imaging radar" automotive point cloud -5G',
-                '"radar target detection" algorithm automotive ADAS -5G'
+                '"radar target detection" algorithm automotive ADAS -5G',
+                # 新增英文长尾词
+                '"automotive radar" signal processing algorithm -5G -communication',
+                '"mmWave" FMCW radar automotive detection -5G',
+                '"phased array" radar automotive beamforming -5G'
             ],
             'patents': [
                 '"毫米波雷达" 专利 天线 车载 -百度知道 -weather -consumer',
                 '"mmWave radar" patent antenna automotive -weather',
                 '"77GHz" 雷达 专利 芯片 车载 -百度知道 -weather -5G',
                 '"radar sensor" patent package automotive -weather -climate',
-                '"毫米波雷达" 发明专利 汽车 -百度知道 -5G'
+                '"毫米波雷达" 发明专利 汽车 -百度知道 -5G',
+                # 新增英文长尾词
+                '"automotive radar" patent antenna design -5G -weather',
+                '"mmWave" radar chip patent automotive -5G'
             ],
             'products': [
                 '"毫米波雷达" 模块 车载 供应商 2026 -百度知道',
                 '"77GHz radar" sensor automotive supplier -百度知道',
                 '"automotive radar" module 2026 price -百度知道 -5G',
-                '"radar chip" 车规级 供应商 -百度知道 -5G'
+                '"radar chip" 车规级 供应商 -百度知道 -5G',
+                # 新增英文长尾词
+                '"mmWave radar module" automotive supplier 2026 -5G',
+                '"77GHz radar sensor" car ADAS price -5G',
+                '"automotive radar" Tier1 supplier Bosch Continental -5G'
             ]
         }
     
@@ -298,10 +319,10 @@ class RadarReportGenerator:
             print(f"  Searching {category}...")
             results = []
             
-            for keyword in keywords[:5]:  # Top 5 keywords per category (increased for better coverage)
-                search_results = self.search(keyword, engines=SEARCH_ENGINES, max_results=12, time_range=SEARCH_TIME_RANGE)
+            for keyword in keywords[:6]:  # Top 6 keywords per category (increased for better coverage)
+                search_results = self.search(keyword, engines=SEARCH_ENGINES, max_results=15, time_range=SEARCH_TIME_RANGE)
                 results.extend(search_results)
-                time.sleep(0.3)  # Rate limiting (reduced for speed)
+                time.sleep(0.2)  # Rate limiting (reduced for speed)
             
             # Remove duplicates within category
             unique_results = self._deduplicate(results)
@@ -316,18 +337,34 @@ class RadarReportGenerator:
             
             print(f"    Found {len(results)} → {len(unique_results)} unique → {len(date_filtered)} date OK → {len(quality_filtered)} quality OK")
         
-        # Second pass: cross-category deduplication
+        # Second pass: cross-category deduplication with minimum per category
         all_seen_urls = set()
+        MIN_PER_CATEGORY = 5  # Ensure at least 5 items per category if available
+        MAX_PER_CATEGORY = 10  # Maximum items per category
+        
         for category in ['industry', 'academic', 'patents', 'products']:  # Fixed order
             if category not in all_results_by_category:
                 continue
+            
             unique_across_categories = []
             for result in all_results_by_category[category]:
                 if result.url not in all_seen_urls:
                     all_seen_urls.add(result.url)
                     unique_across_categories.append(result)
-            # Take top 10 after cross-category dedup
-            sections[category] = unique_across_categories[:10]
+                
+                # Stop if we have enough for this category
+                if len(unique_across_categories) >= MAX_PER_CATEGORY:
+                    break
+            
+            # If we don't have enough, relax the dedup slightly (allow some overlap)
+            if len(unique_across_categories) < MIN_PER_CATEGORY:
+                for result in all_results_by_category[category]:
+                    if len(unique_across_categories) >= MIN_PER_CATEGORY:
+                        break
+                    if result not in unique_across_categories:
+                        unique_across_categories.append(result)
+            
+            sections[category] = unique_across_categories[:MAX_PER_CATEGORY]
             total_items += len(sections[category])
         
         print(f"  Cross-category dedup: {len(all_seen_urls)} unique URLs total")
@@ -479,6 +516,12 @@ class RadarReportGenerator:
         further_filtered = []
         for result in filtered:
             title_lower = result.title.lower()
+            url_lower = result.url.lower()
+            
+            # Skip if URL contains avrotros.nl (Dutch consumer program)
+            if 'avrotros.nl' in url_lower:
+                continue
+            
             # Skip if title matches blacklist (use exact match for better precision)
             skip = False
             for black in TITLE_BLACKLIST:
