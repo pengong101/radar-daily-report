@@ -63,6 +63,15 @@ MIN_YEAR = 2025  # 只保留 2025 年及以后的内容
 PREFER_DAYS = 30  # 优先保留最近 30 天的内容
 MAX_AGE_DAYS = 365  # 最大允许年龄（超过则过滤）
 
+# 时效性评分配置
+RECENCY_BONUS = {
+    7: 5,      # 7 天内 +5 分
+    14: 3,     # 14 天内 +3 分
+    30: 2,     # 30 天内 +2 分
+    90: 1,     # 90 天内 +1 分
+    365: 0,    # 1 年内 0 分
+}
+
 # 内容质量评分配置
 POSITIVE_KEYWORDS = [
     '车载', '汽车', 'automotive', 'vehicle', '77GHz', '24GHz',
@@ -80,22 +89,32 @@ NEGATIVE_KEYWORDS = [
     '机场', 'airport', '小红书', '评价', '如何评价',
     'Qualcomm', 'GSMA', 'operator', 'small cell',
     'weather', 'climate', 'rain', 'snow', 'UK', 'Netweather',
-    'Radar.avrotros', 'consumer program', 'consumenten'
+    'consumer program', 'consumenten',
+    'avrotros', 'radar.avrotros', 'uitzendingen', 'tip de redactie'
 ]
-QUALITY_THRESHOLD = -1  # 质量分低于此值则过滤
+QUALITY_THRESHOLD = -2  # 质量分低于此值则过滤
 
 # 学术分类专属负关键词（额外过滤 5G 通信内容）
 ACADEMIC_EXTRA_NEGATIVE = [
     'Qualcomm', 'GSMA', '5G deployment', 'network operator',
-    'small cell', 'base station', 'telecom', 'spectrum auction'
+    'small cell', 'base station', 'telecom', 'spectrum auction',
+    '5G mmWave', 'mmWave 5G', '5G small cells'
 ]
 
-# 专利分类专属负关键词（额外过滤天气/消费类 radar）
+# 学术分类专属正关键词（必须包含至少一个，确保是雷达相关）
+ACADEMIC_REQUIRED_POSITIVE = [
+    'radar', '雷达', 'automotive', '车载', '汽车', 'vehicle',
+    'ADAS', '自动驾驶', 'autonomous', 'detection', '探测',
+    'MIMO', 'phased array', 'beamforming', '天线', '毫米波', 'mmWave'
+]
+
+# 专利分类专属负关键词（额外过滤天气/消费类 radar + 5G）
 PATENTS_EXTRA_NEGATIVE = [
     'weather radar', 'climate', 'rain', 'snow', 'precipitation',
     'consumer program', 'AVROTROS', 'Nederland', 'UK weather',
     'Netweather', 'live radar', 'rainfall',
-    'avrotros.nl', 'tip de redactie', 'uitzendingen', 'consumenten'
+    'avrotros.nl', 'tip de redactie', 'uitzendingen', 'consumenten',
+    '5G', 'mmWave 5G', '5G mmWave', 'small cells'
 ]
 
 # 专利分类专属正关键词（加分项，非必需）
@@ -163,18 +182,18 @@ class RadarReportGenerator:
                 '"automotive radar" market 2026 -百度知道 -5G'
             ],
             'academic': [
-                '"毫米波雷达" 信号处理 算法 -百度知道 -5G -Qualcomm',
-                '"mmWave radar" signal processing algorithm automotive -5G -Qualcomm',
-                '"MIMO radar" 车载 波束成形 -百度知道',
-                '"4D radar" point cloud automotive -5G',
-                '"radar target detection" algorithm automotive -5G'
+                '"毫米波雷达" 信号处理 算法 车载 -百度知道 -5G -Qualcomm',
+                '"mmWave radar" automotive signal processing -5G -Qualcomm -GSMA',
+                '"MIMO radar" 车载 波束成形 天线 -百度知道',
+                '"4D imaging radar" automotive point cloud -5G',
+                '"radar target detection" algorithm automotive ADAS -5G'
             ],
             'patents': [
-                '"毫米波雷达" 天线 设计 车载 -百度知道 -weather -consumer',
-                '"mmWave radar" antenna design automotive -5G -weather',
-                '"77GHz" 雷达 芯片 结构 车载 -百度知道 -weather',
-                '"radar sensor" package automotive -weather -climate',
-                '"毫米波雷达" 制造 工艺 汽车 -百度知道'
+                '"毫米波雷达" 专利 天线 车载 -百度知道 -weather -consumer',
+                '"mmWave radar" patent antenna automotive -weather',
+                '"77GHz" 雷达 专利 芯片 车载 -百度知道 -weather -5G',
+                '"radar sensor" patent package automotive -weather -climate',
+                '"毫米波雷达" 发明专利 汽车 -百度知道 -5G'
             ],
             'products': [
                 '"毫米波雷达" 模块 车载 供应商 2026 -百度知道',
@@ -374,6 +393,22 @@ class RadarReportGenerator:
                 unique.append(result)
         return unique
     
+    def _calculate_recency_score(self, result: SearchResult) -> int:
+        """
+        Calculate recency bonus score
+        
+        Args:
+            result: SearchResult object
+            
+        Returns:
+            Recency bonus score
+        """
+        age_days = getattr(result, '_age_days', 9999)
+        for threshold, bonus in sorted(RECENCY_BONUS.items()):
+            if age_days <= threshold:
+                return bonus
+        return 0
+    
     def _calculate_quality_score(self, result: SearchResult, category: str = '') -> int:
         """
         Calculate content quality score based on keywords
@@ -403,6 +438,10 @@ class RadarReportGenerator:
             for keyword in ACADEMIC_EXTRA_NEGATIVE:
                 if keyword.lower() in text:
                     score -= 3  # Extra penalty for academic category
+            # Check if academic category has required radar/automotive keywords
+            has_academic_keyword = any(kw.lower() in text for kw in ACADEMIC_REQUIRED_POSITIVE)
+            if not has_academic_keyword:
+                score -= 5  # Moderate penalty if no explicit radar/automotive content
         elif category == 'patents':
             for keyword in PATENTS_EXTRA_NEGATIVE:
                 if keyword.lower() in text:
@@ -411,6 +450,10 @@ class RadarReportGenerator:
             for keyword in PATENTS_BONUS_POSITIVE:
                 if keyword.lower() in text:
                     score += 1  # Bonus for patent content
+        
+        # Add recency bonus
+        recency_bonus = self._calculate_recency_score(result)
+        score += recency_bonus
         
         return score
     
